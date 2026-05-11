@@ -1,44 +1,39 @@
 <template>
   <div class="offline-amap-container">
     <div class="search-container">
-      <input placeholder="请输入高德地图带Key的URL,例如: https://webapi.amap.com/maps?v=2.0&key=xxx" type="input" v-model="key" style="width: 606px;" />
-      <select v-model="selectType" style="margin-right: 1px">
-        <option value="area">区域</option>
-        <option value="address">地点</option>
-      </select>
-      <input
-        placeholder="请输入搜索关键词"
-        type="input"
-        v-model="searchKey"
-        @change="onSearch()"
-        v-show="selectType == 'address'"
-      />
-      <span v-show="selectType == 'area'" style="display: inline-flex">
-        <select v-model="selectProvince" placeholder="请选择省">
-          <option>请选择省</option>
-          <option v-for="p in province" :key="p.name" :value="p.adcode">{{ p.name }}</option>
-        </select>
-
-        <select v-model="selectCity" v-show="selectProvince" placeholder="请选择市">
-          <option>请选择市</option>
-          <option v-for="p in city" :key="p.name" :value="p.adcode">{{ p.name }}</option>
-        </select>
-
-        <select v-model="selectArea" v-show="selectCity && selectProvince" placeholder="请选择区县">
-          <option>请选择区县</option>
-          <option v-for="p in area" :key="p.name" :value="p.adcode">{{ p.name }}</option>
-        </select>
-      </span>
-      <button @click="onSearch()">搜索</button>
-      <button @click="drawRect()">画范围</button>
-
-      <button @click="isShow = true" v-if="rect">下载</button>
+      <div class="search-row">
+        <input placeholder="请输入高德地图URL,例如: https://webapi.amap.com/maps?v=2.0&key=xxx" type="text" v-model="key" class="key-input" />
+        <button @click="loadAMap()">加载地图</button>
+      </div>
+      <div class="search-row">
+        <input
+          placeholder="请输入地点搜索，如：深圳"
+          type="text"
+          v-model="searchKey"
+          @keyup.enter="onSearch()"
+        />
+        <button @click="onSearch()">搜索</button>
+        <button @click="drawRect()">画范围</button>
+        <button @click="isShow = true" v-if="rect">下载</button>
+      </div>
     </div>
 
     <div class="bottom-info" ref="info">
       <span>在地图上拖拉画矩形</span>
       当前缩放级别： {{ zoom }},中心经纬度:{{ lng }},{{ lat }}
       <span v-if="rect">选中范围:{{ rectLngLat }}</span>
+    </div>
+
+    <div class="map-style-switcher">
+      <div
+        v-for="item in styleOps"
+        :key="item.value"
+        class="style-item"
+        :class="{ active: selectStyle === item.value }"
+        @click="switchMapLayer(item.value)"
+      >
+        {{ item.label }}
+      </div>
     </div>
 
     <div class="left-tool" v-if="rect">
@@ -99,6 +94,45 @@
     };
     xhr.send();
   }
+  const PI = Math.PI;
+  const EE = 0.00669342162296594323;
+  const A = 6378245.0;
+
+  function outOfChina(lng, lat) {
+    return lng < 72.004 || lng > 137.8347 || lat < 0.8293 || lat > 55.8271;
+  }
+
+  function transformLatHelper(lng, lat) {
+    let ret = -100.0 + 2.0 * lng + 3.0 * lat + 0.2 * lat * lat +
+      0.1 * lng * lat + 0.2 * Math.sqrt(Math.abs(lng));
+    ret += (20.0 * Math.sin(6.0 * lng * PI) + 20.0 * Math.sin(2.0 * lng * PI)) * 2.0 / 3.0;
+    ret += (20.0 * Math.sin(lat * PI) + 40.0 * Math.sin(lat / 3.0 * PI)) * 2.0 / 3.0;
+    ret += (160.0 * Math.sin(lat / 12.0 * PI) + 320 * Math.sin(lat * PI / 30.0)) * 2.0 / 3.0;
+    return ret;
+  }
+
+  function transformLngHelper(lng, lat) {
+    let ret = 300.0 + lng + 2.0 * lat + 0.1 * lng * lng +
+      0.1 * lng * lat + 0.1 * Math.sqrt(Math.abs(lng));
+    ret += (20.0 * Math.sin(6.0 * lng * PI) + 20.0 * Math.sin(2.0 * lng * PI)) * 2.0 / 3.0;
+    ret += (20.0 * Math.sin(lng * PI) + 40.0 * Math.sin(lng / 3.0 * PI)) * 2.0 / 3.0;
+    ret += (150.0 * Math.sin(lng / 12.0 * PI) + 300.0 * Math.sin(lng / 30.0 * PI)) * 2.0 / 3.0;
+    return ret;
+  }
+
+  function wgs84ToGcj02(wgsLng, wgsLat) {
+    if (outOfChina(wgsLng, wgsLat)) return [wgsLng, wgsLat];
+    let dLat = transformLatHelper(wgsLng - 105.0, wgsLat - 35.0);
+    let dLng = transformLngHelper(wgsLng - 105.0, wgsLat - 35.0);
+    let radLat = wgsLat / 180.0 * PI;
+    let magic = Math.sin(radLat);
+    magic = 1 - EE * magic * magic;
+    let sqrtMagic = Math.sqrt(magic);
+    dLat = (dLat * 180.0) / ((A * (1 - EE)) / (magic * sqrtMagic) * PI);
+    dLng = (dLng * 180.0) / (A / sqrtMagic * Math.cos(radLat) * PI);
+    return [wgsLng + dLng, wgsLat + dLat];
+  }
+
   function lon2tilex(lon, zoom) {
     return Math.floor(((lon + 180) / 360) * Math.pow(2, zoom));
   }
@@ -133,25 +167,18 @@
       map: null,
       zoom: 11,
       searchKey: '',
-      selectType: 'address',
       mouseTool: null,
-      geocoder: null,
       marker: null,
       lat: 39.90923,
       lng: 116.397428,
-      district: null,
-      polygon: null,
       isLock: false,
       rect: null,
       theZip: null,
-      selectProvince: '',
-      province: [],
-      selectCity: '',
-      city: [],
-      selectArea: '',
-      area: [],
       key: '',
+      amapKey: '',
       isLoading: false,
+      extraLayer: null,
+      mapLoaded: false,
     }),
     computed: {
       tableData() {
@@ -175,90 +202,52 @@
           return this.rect.getOptions().bounds.toString();
         }
         return null;
-      },
-
-      currentAdcode() {
-        if (this.selectArea) {
-          return this.selectArea;
-        }
-        if (this.selectCity) {
-          return this.selectCity;
-        }
-        if (this.selectProvince) {
-          return this.selectProvince;
-        }
-      },
-      currentLevel() {
-        if (this.selectArea) {
-          return 'district';
-        }
-        if (this.selectCity) {
-          return 'city';
-        }
-        if (this.selectProvince) {
-          return 'province';
-        }
-      }
-    },
-    watch: {
-      selectProvince() {
-        if (this.province) {
-          this.getDistrict('city', this.selectProvince);
-        } else {
-          this.selectCity = '';
-          this.selectArea = '';
-        }
-      },
-      selectCity() {
-        if (this.selectCity) {
-          this.getDistrict('district', this.selectCity);
-        } else {
-          this.selectArea = '';
-        }
-      },
-      key() {
-        if (this.key.includes('key=') && this.key.includes('v=2.0')) {
-				let script = document.createElement('script');
-				script.src = this.key;
-				document.head.appendChild(script);
-				script.onload = () => {
-					this.initMap();
-				};
-			}
       }
     },
     methods: {
+      loadAMap() {
+        let match = this.key.match(/key=([^&]+)/);
+        if (!match) {
+          this.$message.warning('URL中需包含key=参数');
+          return;
+        }
+        this.amapKey = match[1];
+        if (this.mapLoaded) {
+          this.initMap();
+          return;
+        }
+        let script = document.createElement('script');
+        script.src = this.key;
+        document.head.appendChild(script);
+        script.onload = () => {
+          this.mapLoaded = true;
+          this.$message.success('地图加载成功');
+          this.initMap();
+        };
+        script.onerror = () => {
+          this.$message.error('地图脚本加载失败，请检查URL');
+        };
+      },
       initMap() {
-			this.map = new AMap.Map(this.$refs.canvas, {
-				resizeEnable: true,
-				zoom: this.zoom,
-				center: [this.lng, this.lat]
-			});
-			this.marker = new AMap.Marker();
-			this.marker.setPosition([this.lng, this.lat]);
-			this.map.add(this.marker);
-			this.map.on('zoomend', () => {
-				this.zoomCenter();
-			});
-			this.map.on('moveend', () => {
-				this.zoomCenter();
-			});
-
-			AMap.plugin(
-				['AMap.MouseTool', 'AMap.Geocoder', 'AMap.DistrictSearch', 'AMap.RectangleEditor'],
-				() => {
-					this.mouseTool = new AMap.MouseTool(this.map);
-					this.geocoder = new AMap.Geocoder({});
-
-					this.getDistrict('province', '100000');
-				}
-			);
-		},
+        this.map = new AMap.Map(this.$refs.canvas, {
+          resizeEnable: true,
+          zoom: this.zoom,
+          center: [this.lng, this.lat]
+        });
+        this.marker = new AMap.Marker();
+        this.marker.setPosition([this.lng, this.lat]);
+        this.map.add(this.marker);
+        this.map.on('zoomend', () => { this.zoomCenter(); });
+        this.map.on('moveend', () => { this.zoomCenter(); });
+        AMap.plugin(['AMap.MouseTool', 'AMap.RectangleEditor'], () => {
+          this.mouseTool = new AMap.MouseTool(this.map);
+        });
+      },
       onEditRectEnd() {
-        this.rectangleEditor.close();
+        if (this.rectangleEditor) this.rectangleEditor.close();
       },
       onEditRectStart() {
-        this.rectangleEditor.open();
+        if (this.rectangleEditor) this.rectangleEditor.open();
       },
       getTileCount(zoom) {
         let b = this.rect.getOptions().bounds;
@@ -274,32 +263,6 @@
           endy = Math.max(y, y1);
 
         return (endx - startx + 1) * (endy - starty + 1);
-      },
-      getDistrict(type, adcode) {
-        var districtSearch = new AMap.DistrictSearch({
-          level: type,
-
-          subdistrict: 1
-        });
-
-        // 搜索所有省/直辖市信息
-        districtSearch.search(adcode, (status, result) => {
-          console.log(result);
-          let list = result.districtList[0].districtList;
-          switch (type) {
-            case 'province':
-              this.province = list;
-              break;
-            case 'city':
-              this.city = list;
-              break;
-            case 'district':
-              this.area = list;
-              break;
-            default:
-              break;
-          }
-        });
       },
       writeBlob(x, y, z) {
         return new Promise((resolve) => {
@@ -377,9 +340,12 @@
                 this.process = (((i + 5) / tiles.length) * 100).toFixed(2);
               }
 
+              let selectedZooms = Object.keys(this.zoomMap).filter(k => this.zoomMap[k]).map(Number);
+              let minZ = Math.min(...selectedZooms);
+              let maxZ = Math.max(...selectedZooms);
               this.theZip.file(
                 `README.md`,
-                `# 文件夹目录\n${this.rule}\n\n# 当前地图瓦片 \n 范围：${this.rectLngLat}\n中心点:${this.centerLnglat}`
+                `# 文件夹目录\n${this.rule}\n\n# 当前地图瓦片\n范围:${this.rectLngLat}\n中心点:${this.centerLnglat}\n最小缩放:${minZ}\n最大缩放:${maxZ}`
               );
               this.theZip.generateAsync({ type: 'blob' }).then((blob) => {
                 saveAs(blob, '离线高德地图瓦片' + new Date().getTime() + '.zip');
@@ -389,60 +355,36 @@
           });
         });
       },
-      onSearch() {
-        if (this.selectType == 'address') {
-          if (this.searchKey) {
-            this.geocoder.getLocation(this.searchKey, (status, result) => {
-              if (status === 'complete' && result.geocodes.length) {
-                var lnglat = result.geocodes[0].location;
-
-                this.marker.setPosition(lnglat);
-
-                this.map.setCenter(lnglat);
-              } else {
-                this.$message.error('根据地址查询位置失败');
-              }
-            });
+      async onSearch() {
+        if (!this.map) {
+          this.$message.warning('请先加载地图');
+          return;
+        }
+        if (!this.searchKey) {
+          this.$message.warning('请输入搜索关键词');
+          return;
+        }
+        try {
+          let res = await fetch(
+            `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(this.searchKey)}&limit=1&accept-language=zh`,
+            { headers: { 'User-Agent': 'OfflineMapDownloader/1.0' } }
+          );
+          let data = await res.json();
+          if (data && data.length > 0) {
+            let wgsLng = parseFloat(data[0].lon);
+            let wgsLat = parseFloat(data[0].lat);
+            let [gcjLng, gcjLat] = wgs84ToGcj02(wgsLng, wgsLat);
+            let lnglat = [gcjLng, gcjLat];
+            this.marker.setPosition(lnglat);
+            this.map.setCenter(lnglat);
+            this.map.setZoom(13);
+            this.$message.success('已定位到: ' + data[0].display_name);
           } else {
-            this.$message.error('请输入搜索关键词');
+            this.$message.error('未找到该地点，请检查输入');
           }
-        } else {
-          this.district = new AMap.DistrictSearch({
-            subdistrict: 0, //获取边界不需要返回下级行政区
-            extensions: 'all', //返回行政区边界坐标组等具体信息
-            level: 'district' //查询行政级别为 市
-          });
-          console.log(this.currentAdcode);
-          this.district.search(this.currentAdcode, (status, result) => {
-            if (status === 'complete' && result.districtList.length) {
-              console.log(result.districtList);
-              var bounds = result.districtList[0].boundaries;
-              if (bounds) {
-                //生成行政区划polygon
-                for (var i = 0; i < bounds.length; i += 1) {
-                  //构造MultiPolygon的path
-                  bounds[i] = [bounds[i]];
-                }
-                if (!this.polygon) {
-                  this.polygon = new AMap.Polygon({
-                    strokeWeight: 1,
-                    path: bounds,
-                    fillOpacity: 0.4,
-                    fillColor: '#80d8ff',
-                    strokeColor: '#0091ea'
-                  });
-                } else {
-                  this.polygon.setPath(bounds);
-                }
-
-                this.map.add(this.polygon);
-                this.map.setCenter(this.polygon.getBounds().getCenter());
-                this.map.setFitView(this.polygon);
-              }
-            } else {
-              this.$message.error('根据地址查询位置失败');
-            }
-          });
+        } catch (e) {
+          console.error(e);
+          this.$message.error('搜索请求失败，请检查网络');
         }
       },
       clearRect() {
@@ -485,6 +427,21 @@
             this.isLock = false;
           }, 1000);
         }
+      },
+      switchMapLayer(style) {
+        this.selectStyle = style;
+        if (!this.map) return;
+        if (this.extraLayer) {
+          this.map.remove(this.extraLayer);
+          this.extraLayer = null;
+        }
+        if (style === '6') {
+          this.extraLayer = new AMap.TileLayer.Satellite();
+          this.map.add(this.extraLayer);
+        } else if (style === '8') {
+          this.extraLayer = new AMap.TileLayer.Traffic({ autoRefresh: true });
+          this.map.add(this.extraLayer);
+        }
       }
     },
     mounted() {
@@ -516,29 +473,76 @@
     color: black;
     button {
       border: none;
-      background-color: dodgerblue;
+      background: linear-gradient(135deg, #4a90d9, #357abd);
       min-width: 100px;
       color: white;
-      height: 40px;
+      height: 38px;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      box-shadow: 0 2px 6px rgba(74, 144, 217, 0.3);
+      &:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(74, 144, 217, 0.4);
+        background: linear-gradient(135deg, #5a9ee6, #4a90d9);
+      }
       &:active {
-        filter: brightness(1.3);
+        transform: translateY(0) scale(0.97);
+        box-shadow: 0 1px 4px rgba(74, 144, 217, 0.3);
+      }
+    }
+    .map-style-switcher {
+      position: fixed;
+      bottom: 44px;
+      left: 12px;
+      z-index: 1000;
+      display: flex;
+      background: rgba(255, 255, 255, 0.95);
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+      overflow: hidden;
+      backdrop-filter: blur(8px);
+      .style-item {
+        padding: 8px 16px;
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        color: #555;
+        border-right: 1px solid #eee;
+        user-select: none;
+        &:last-child {
+          border-right: none;
+        }
+        &:hover {
+          background: #f0f5ff;
+          color: #4a90d9;
+        }
+        &.active {
+          background: #4a90d9;
+          color: white;
+          font-weight: 500;
+        }
       }
     }
     .left-tool {
       position: fixed;
       top: 40%;
       left: 0px;
-      z-index: 3;
+      z-index: 1000;
       display: inline-flex;
-
       flex-direction: column;
-      width: 100px;
+      width: 110px;
+      padding: 4px;
       > button {
         width: 100%;
         margin: 0px;
+        border-radius: 6px;
+        font-size: 13px;
+        height: 36px;
       }
       > button:not(:last-child) {
-        margin-bottom: 10px;
+        margin-bottom: 8px;
       }
     }
     .bottom-info {
@@ -551,34 +555,52 @@
       font-size: 14px;
       color: white;
       text-align: center;
-      z-index: 2;
+      z-index: 1000;
       background-color: black;
     }
     .search-container {
       position: fixed;
-      top: 100px;
-      width: 100%;
+      top: 80px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
       display: flex;
+      flex-direction: column;
       align-items: center;
-      justify-content: center;
-      z-index: 2;
-      height: 40px;
+      gap: 6px;
+      .search-row {
+        display: flex;
+        align-items: center;
+        height: 40px;
+        gap: 4px;
+      }
+      .key-input {
+        width: 500px;
+      }
       button {
-        margin: 0 4px;
+        margin: 0;
+        height: 38px;
+        white-space: nowrap;
       }
       input,
       select {
         background-color: white;
-        border: solid #1e90ff 1px;
-        height: 40px;
-        padding: 0 8px;
+        border: 1px solid #d0d7de;
+        height: 38px;
+        padding: 0 10px;
         line-height: 1;
         outline: none;
-        font-size: 16px;
+        font-size: 14px;
+        border-radius: 6px;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        &:focus {
+          border-color: #4a90d9;
+          box-shadow: 0 0 0 3px rgba(74, 144, 217, 0.15);
+        }
         &::placeholder,
         &::-webkit-input-placeholder,
         &::-moz-placeholder {
-          color: gray;
+          color: #aaa;
         }
       }
     }

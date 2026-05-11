@@ -198,6 +198,10 @@
     </div>
 
     <button class="btn btn-primary" onclick="reloadMap()">重新加载地图</button>
+    <label class="btn btn-toggle" style="display:block;text-align:center;cursor:pointer">
+      从README.md加载配置
+      <input type="file" id="readmeFile" accept=".md" style="display:none" onchange="loadReadmeFile(event)" />
+    </label>
     <button class="btn btn-toggle" onclick="togglePanel()">收起面板</button>
   </div>
 
@@ -272,6 +276,36 @@
       var btn = document.getElementById('panelToggleBtn');
       panel.classList.toggle('collapsed');
       btn.classList.toggle('visible');
+    }
+
+    function loadReadmeFile(event) {
+      var file = event.target.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function (e) {
+        applyReadmeConfig(e.target.result);
+      };
+      reader.readAsText(file);
+    }
+
+    function applyReadmeConfig(text) {
+      var centerMatch = text.match(/中心点[:：]\s*([\d.]+),\s*([\d.]+)/);
+      var minZoomMatch = text.match(/最小缩放[:：]\s*(\d+)/);
+      var maxZoomMatch = text.match(/最大缩放[:：]\s*(\d+)/);
+      if (centerMatch) {
+        document.getElementById('lng').value = centerMatch[1];
+        document.getElementById('lat').value = centerMatch[2];
+      }
+      if (minZoomMatch) {
+        var minZ = parseInt(minZoomMatch[1]);
+        document.getElementById('minZoom').value = minZ;
+        document.getElementById('zoom').value = minZ;
+      }
+      if (maxZoomMatch) {
+        document.getElementById('maxZoom').value = maxZoomMatch[1];
+      }
+      initMap();
+      alert('配置已从README.md加载');
     }
 
     initMap();
