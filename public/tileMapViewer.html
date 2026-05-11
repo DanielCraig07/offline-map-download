@@ -154,7 +154,6 @@
       font-size: 12px;
       white-space: nowrap;
     }
-
   </style>
 </head>
 
@@ -167,9 +166,9 @@
     <h3>瓦片地图配置</h3>
 
     <div class="control-group">
-      <label>瓦片地址模板</label>
-      <input type="text" id="tileUrl" value="http://127.0.0.1:5500/public/tiles/{z}/{x}/{y}.png"
-        placeholder="{z}/{x}/{y} 为占位符" />
+      <label>瓦片文件夹</label>
+      <button class="btn btn-primary" onclick="selectTileFolder()" style="margin-top:0">选择瓦片文件夹</button>
+      <div id="folderInfo" style="font-size:11px;color:#999;margin-top:4px">请选择包含 z/y/x.png 结构的文件夹</div>
     </div>
 
     <div class="control-group">
@@ -184,7 +183,7 @@
 
     <div class="control-group">
       <label>初始缩放级别</label>
-      <input type="number" id="zoom" value="13" min="1" max="18" />
+      <input type="number" id="zoom" value="11" min="1" max="18" />
     </div>
 
     <div class="control-group">
@@ -210,7 +209,7 @@
   </div>
 
   <script>
-    var map, tileLayer;
+    var map, tileLayer, tileDirHandle = null;
 
     function initMap() {
       var lng = parseFloat(document.getElementById('lng').value);
@@ -218,7 +217,6 @@
       var zoom = parseInt(document.getElementById('zoom').value);
       var minZoom = parseInt(document.getElementById('minZoom').value);
       var maxZoom = parseInt(document.getElementById('maxZoom').value);
-      var tileUrl = document.getElementById('tileUrl').value;
 
       if (map) {
         map.remove();
@@ -232,20 +230,9 @@
         attributionControl: false
       });
 
-      // OSM 底图
-      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        opacity: 0.3
-      }).addTo(map);
-
-      // 自定义瓦片叠加层
-      tileLayer = L.tileLayer(tileUrl, {
-        minZoom: minZoom,
-        maxZoom: maxZoom,
-        tileSize: 256,
-        errorTileUrl: '',
-        opacity: 1
-      }).addTo(map);
+      if (tileDirHandle) {
+        addLocalTileLayer(minZoom, maxZoom);
+      }
 
       updateInfoBar();
 
@@ -257,6 +244,61 @@
       });
 
       map.on('zoomend', updateInfoBar);
+    }
+
+    function addLocalTileLayer(minZoom, maxZoom) {
+      var LocalTileLayer = L.GridLayer.extend({
+        createTile: function (coords, done) {
+          var tile = document.createElement('img');
+          tile.setAttribute('role', 'presentation');
+          tile.style.width = '256px';
+          tile.style.height = '256px';
+          tile.onerror = function () { tile.style.display = 'none'; };
+
+          var z = coords.z, y = coords.y, x = coords.x;
+          tileDirHandle.getDirectoryHandle(String(z))
+            .then(function (zDir) { return zDir.getDirectoryHandle(String(y)); })
+            .then(function (yDir) { return yDir.getFileHandle(x + '.png'); })
+            .then(function (fh) { return fh.getFile(); })
+            .then(function (file) {
+              tile.src = URL.createObjectURL(file);
+              done(null, tile);
+            })
+            .catch(function () {
+              done(null, tile);
+            });
+
+          return tile;
+        }
+      });
+
+      tileLayer = new LocalTileLayer({
+        minZoom: minZoom,
+        maxZoom: maxZoom,
+        tileSize: 256
+      }).addTo(map);
+    }
+
+    async function selectTileFolder() {
+      if (!window.showDirectoryPicker) {
+        alert('当前浏览器不支持选择文件夹，请使用 Chrome 或 Edge');
+        return;
+      }
+      try {
+        tileDirHandle = await window.showDirectoryPicker({ mode: 'read' });
+        document.getElementById('folderInfo').textContent = '已选择: ' + tileDirHandle.name;
+        showToast('瓦片文件夹已加载');
+        var minZoom = parseInt(document.getElementById('minZoom').value);
+        var maxZoom = parseInt(document.getElementById('maxZoom').value);
+        if (map) {
+          if (tileLayer) map.removeLayer(tileLayer);
+          addLocalTileLayer(minZoom, maxZoom);
+        } else {
+          initMap();
+        }
+      } catch (e) {
+        // user cancelled
+      }
     }
 
     function updateInfoBar() {
@@ -286,6 +328,7 @@
         applyReadmeConfig(e.target.result);
       };
       reader.readAsText(file);
+      event.target.value = '';
     }
 
     function applyReadmeConfig(text) {
@@ -299,13 +342,22 @@
       if (minZoomMatch) {
         var minZ = parseInt(minZoomMatch[1]);
         document.getElementById('minZoom').value = minZ;
-        document.getElementById('zoom').value = minZ;
+        document.getElementById('zoom').value = 13;
       }
       if (maxZoomMatch) {
         document.getElementById('maxZoom').value = maxZoomMatch[1];
       }
       initMap();
-      alert('配置已从README.md加载');
+      showToast('配置已从README.md加载');
+    }
+
+    function showToast(msg) {
+      var toast = document.createElement('div');
+      toast.textContent = msg;
+      toast.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:9999;background:rgba(0,0,0,0.75);color:#fff;padding:10px 24px;border-radius:20px;font-size:14px;pointer-events:none;transition:opacity 0.5s';
+      document.body.appendChild(toast);
+      setTimeout(function () { toast.style.opacity = '0'; }, 2000);
+      setTimeout(function () { document.body.removeChild(toast); }, 2500);
     }
 
     initMap();

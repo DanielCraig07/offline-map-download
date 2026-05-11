@@ -11,6 +11,7 @@
           type="text"
           v-model="searchKey"
           @keyup.enter="onSearch()"
+          class="search-input"
         />
         <button @click="onSearch()">搜索</button>
         <button @click="drawRect()">画范围</button>
@@ -71,7 +72,8 @@
       </el-table>
       <template #footer>
         <div style="text-align: right">
-          <el-button type="primary" @click="download()">下载</el-button>
+          <el-button @click="download('zip')">下载为ZIP</el-button>
+          <el-button type="primary" @click="download('folder')">下载到文件夹</el-button>
         </div>
       </template>
     </el-dialog>
@@ -83,16 +85,44 @@
     let xhr = new XMLHttpRequest();
     xhr.open('GET', url, true);
     xhr.responseType = 'blob';
+    xhr.timeout = 30000;
     xhr.onload = function () {
       if (xhr.status === 200) {
         cb(xhr.response);
+      } else {
+        cb(null);
       }
     };
-    xhr.onerror = function (err) {
-      console.log(err);
-      cb();
+    xhr.onerror = function () {
+      cb(null);
+    };
+    xhr.ontimeout = function () {
+      cb(null);
     };
     xhr.send();
+  }
+
+  function fetchTileWithRetry(url, maxRetries) {
+    return new Promise((resolve) => {
+      let attempt = 0;
+      function tryFetch() {
+        getBlob(url, (res) => {
+          if (res) {
+            resolve(res);
+          } else if (attempt < maxRetries) {
+            attempt++;
+            setTimeout(tryFetch, 1000 * attempt);
+          } else {
+            resolve(null);
+          }
+        });
+      }
+      tryFetch();
+    });
+  }
+
+  function delay(ms) {
+    return new Promise((r) => setTimeout(r, ms));
   }
   const PI = Math.PI;
   const EE = 0.00669342162296594323;
@@ -264,17 +294,30 @@
 
         return (endx - startx + 1) * (endy - starty + 1);
       },
+      async writeBlobToFolder(x, y, z, tilesDir) {
+        let url = `http://wprd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=${
+          this.selectStyle || 7
+        }&x=${x}&y=${y}&z=${z}`;
+        let res = await fetchTileWithRetry(url, 3);
+        if (!res) return false;
+        let zDir = await tilesDir.getDirectoryHandle(String(z), { create: true });
+        let yDir = await zDir.getDirectoryHandle(String(y), { create: true });
+        let fileHandle = await yDir.getFileHandle(`${x}.png`, { create: true });
+        let writable = await fileHandle.createWritable();
+        await writable.write(res);
+        await writable.close();
+        return true;
+      },
       writeBlob(x, y, z) {
-        return new Promise((resolve) => {
-          getBlob(
-            `http://wprd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=${
-              this.selectStyle || 7
-            }&x=${x}&y=${y}&z=${z}`,
-            (res) => {
-              this.theZip.file(`tiles/${z}/${y}/${x}.png`, res);
-              resolve();
-            }
-          );
+        let url = `http://wprd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=${
+          this.selectStyle || 7
+        }&x=${x}&y=${y}&z=${z}`;
+        return fetchTileWithRetry(url, 3).then((res) => {
+          if (res) {
+            this.theZip.file(`tiles/${z}/${y}/${x}.png`, res);
+            return true;
+          }
+          return false;
         });
       },
       getTileLayer() {
@@ -303,56 +346,93 @@
         }
         return list;
       },
-      download() {
+      download(mode) {
+        if (mode === 'folder' && !window.showDirectoryPicker) {
+          this.$message.warning('当前浏览器不支持直接写入文件夹，请使用Chrome/Edge浏览器，或选择ZIP下载');
+          return;
+        }
         let tiles = this.getTileLayer();
         this.$msgbox({
           title: '是否下载?',
-          message: `大概需要${(tiles.length * 0.1 / 6).toFixed(2)}秒`,
+          message: `共 ${tiles.length} 个瓦片，大概需要${(tiles.length * 0.1 / 6).toFixed(2)}秒`,
           showConfirmButton: true,
           showCancelButton: true
-        }).then(() => {
+        }).then(async () => {
           this.isShow = false;
           this.isLoading = true;
           this.process = 0;
-          getBlob('tiles.zip', (res) => {
-            JSZip.loadAsync(res).then(async (zip) => {
-              this.theZip = zip;
+          let failCount = 0;
 
-              // 同时下载6个，因为高德地图服务器http1.1的限制,并发数为通常为6
-              for (let i = 0; i < tiles.length; i += 6) {
-
-                if (i + 5 >= tiles.length) {
-                  for (let j = i; j < tiles.length; j++) {
-                    await this.writeBlob(tiles[j].x, tiles[j].y, tiles[j].z);
-                  }
-                  this.process = 100;
-                  break;
-                }
-
-                await Promise.all([
-                  this.writeBlob(tiles[i].x, tiles[i].y, tiles[i].z),
-                  this.writeBlob(tiles[i + 1].x, tiles[i + 1].y, tiles[i + 1].z),
-                  this.writeBlob(tiles[i + 2].x, tiles[i + 2].y, tiles[i + 2].z),
-                  this.writeBlob(tiles[i + 3].x, tiles[i + 3].y, tiles[i + 3].z),
-                  this.writeBlob(tiles[i + 4].x, tiles[i + 4].y, tiles[i + 4].z),
-                  this.writeBlob(tiles[i + 5].x, tiles[i + 5].y, tiles[i + 5].z)
-                ]);
-                this.process = (((i + 5) / tiles.length) * 100).toFixed(2);
-              }
-
-              let selectedZooms = Object.keys(this.zoomMap).filter(k => this.zoomMap[k]).map(Number);
-              let minZ = Math.min(...selectedZooms);
-              let maxZ = Math.max(...selectedZooms);
-              this.theZip.file(
-                `README.md`,
-                `# 文件夹目录\n${this.rule}\n\n# 当前地图瓦片\n范围:${this.rectLngLat}\n中心点:${this.centerLnglat}\n最小缩放:${minZ}\n最大缩放:${maxZ}`
-              );
-              this.theZip.generateAsync({ type: 'blob' }).then((blob) => {
-                saveAs(blob, '离线高德地图瓦片' + new Date().getTime() + '.zip');
-              });
+          if (mode === 'folder') {
+            let rootDir;
+            try {
+              rootDir = await window.showDirectoryPicker({ mode: 'readwrite' });
+            } catch {
               this.isLoading = false;
+              return;
+            }
+            let tilesDir = await rootDir.getDirectoryHandle('tiles', { create: true });
+
+            for (let i = 0; i < tiles.length; i += 6) {
+              let batch = tiles.slice(i, i + 6);
+              let results = await Promise.all(
+                batch.map((t) => this.writeBlobToFolder(t.x, t.y, t.z, tilesDir))
+              );
+              failCount += results.filter((r) => !r).length;
+              this.process = (((i + batch.length) / tiles.length) * 100).toFixed(2);
+              if (i + 6 < tiles.length) await delay(200);
+            }
+            this.process = 100;
+
+            let selectedZooms = Object.keys(this.zoomMap).filter(k => this.zoomMap[k]).map(Number);
+            let minZ = Math.min(...selectedZooms);
+            let maxZ = Math.max(...selectedZooms);
+            let readmeHandle = await rootDir.getFileHandle('README.md', { create: true });
+            let writable = await readmeHandle.createWritable();
+            await writable.write(`# 文件夹目录\n${this.rule}\n\n# 当前地图瓦片\n范围:${this.rectLngLat}\n中心点:${this.centerLnglat}\n最小缩放:${minZ}\n最大缩放:${maxZ}`);
+            await writable.close();
+
+            this.isLoading = false;
+            if (failCount > 0) {
+              this.$message.warning(`下载完成，但有 ${failCount} 个瓦片下载失败`);
+            } else {
+              this.$message.success('全部瓦片已写入文件夹');
+            }
+          } else {
+            getBlob('tiles.zip', (res) => {
+              JSZip.loadAsync(res).then(async (zip) => {
+                this.theZip = zip;
+
+                for (let i = 0; i < tiles.length; i += 6) {
+                  let batch = tiles.slice(i, i + 6);
+                  let results = await Promise.all(
+                    batch.map((t) => this.writeBlob(t.x, t.y, t.z))
+                  );
+                  failCount += results.filter((r) => !r).length;
+                  this.process = (((i + batch.length) / tiles.length) * 100).toFixed(2);
+                  if (i + 6 < tiles.length) await delay(200);
+                }
+                this.process = 100;
+
+                let selectedZooms = Object.keys(this.zoomMap).filter(k => this.zoomMap[k]).map(Number);
+                let minZ = Math.min(...selectedZooms);
+                let maxZ = Math.max(...selectedZooms);
+                this.theZip.file(
+                  `README.md`,
+                  `# 文件夹目录\n${this.rule}\n\n# 当前地图瓦片\n范围:${this.rectLngLat}\n中心点:${this.centerLnglat}\n最小缩放:${minZ}\n最大缩放:${maxZ}`
+                );
+                this.theZip.generateAsync({ type: 'blob' }).then((blob) => {
+                  saveAs(blob, '离线高德地图瓦片' + new Date().getTime() + '.zip');
+                  if (failCount > 0) {
+                    this.$message.warning(`下载完成，但有 ${failCount} 个瓦片下载失败`);
+                  } else {
+                    this.$message.success('全部瓦片下载成功');
+                  }
+                });
+                this.isLoading = false;
+              });
             });
-          });
+          }
         });
       },
       async onSearch() {
@@ -576,6 +656,9 @@
       }
       .key-input {
         width: 500px;
+      }
+      .search-input {
+        width: 294px;
       }
       button {
         margin: 0;
