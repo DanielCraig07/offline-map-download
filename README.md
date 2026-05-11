@@ -32,9 +32,7 @@ function lat2tiley(lat, zoom) {
 # 3.使用到的库
 
 - `jszip`用于把瓦片地图写入到压缩包里面，统一下载
-
 - `地图API`自己去官网注册一个 key，我这里以高德地图为例，如果是百度，腾讯等地图的瓦片，最好用他们的地图，避免经纬度转换的问题，注意：高德和腾讯都用的火星 gcj 经纬度，百度自己一套的。
-
 - 相关离线瓦片地图开放地址参考
 
 > https://www.cnblogs.com/feiquan/p/14304660.html > https://blog.csdn.net/qq_19689967/article/details/121221727
@@ -124,7 +122,7 @@ styles: [
 }&x=${x}&y=${y}&z=${z}`;
 ```
 
-> 获取高德地图瓦片地图，下载的是 256x256 的 png 图片，如果需要不同的文件写入目录请自行更改`tiles/${z}/${y}/${x}.png`,注意一定要 setTimeout 间隔点时间再请求下一个，避免请求太频繁，被高德地图限制。
+> 获取高德地图瓦片地图，下载的是 256x256 的 png 图片，如果需要不同的文件写入目录请自行更改 `tiles/${z}/${y}/${x}.png`,注意一定要 setTimeout 间隔点时间再请求下一个，避免请求太频繁，被高德地图限制。
 
 ```js
 writeBlob(x, y, z) {
@@ -185,7 +183,7 @@ download() {
 
 ## 完整代码地址
 
-> https://github.com/xiaolidan00/offline-map-download
+> https://github.com/DanielCraig07/offline-map-download.git
 
 # 5.使用瓦片地图
 
@@ -221,9 +219,7 @@ tiles/z/y/x/1234.png
 **注意：**
 
 1. `getTileUrl`瓦片地图地址，一定要用 function,直接字符串，默认走 https 就 404 了
-
 2. 不要用 defaultLayer 来加载地图，会加载不了瓦片地图，要叠加一层 layer
-
 3. 避免加载空白一定要限定缩放范围 zooms 和边界方位 bounds
 
 文件地址：public/offlineMap.html 可测试验证离线地图
