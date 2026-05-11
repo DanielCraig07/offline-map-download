@@ -108,7 +108,7 @@ getTileCount(zoom) {
 
 ```
 
-## 3.根据选择的缩放等级、文件写入规则、瓦片类型，下载写入 zip 包
+## 3.根据选择的缩放等级、文件写入规则、瓦片类型，并发下载写入 zip 包
 
 > 高德地图开放瓦片地图资源
 
@@ -122,26 +122,25 @@ styles: [
 }&x=${x}&y=${y}&z=${z}`;
 ```
 
-> 获取高德地图瓦片地图，下载的是 256x256 的 png 图片，如果需要不同的文件写入目录请自行更改 `tiles/${z}/${y}/${x}.png`,注意一定要 setTimeout 间隔点时间再请求下一个，避免请求太频繁，被高德地图限制。
+> 获取高德地图瓦片地图，下载的是 256x256 的 png 图片，如果需要不同的文件写入目录请自行更改 `tiles/${z}/${y}/${x}.png`。采用并发下载（每次6个），速度提升约6倍。
 
 ```js
 writeBlob(x, y, z) {
-        return new Promise(resolve => {
+        return new Promise((resolve) => {
           getBlob(
-            `http://wprd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=${this.selectStyle ||
-              7}&x=${x}&y=${y}&z=${z}`,
-            res => {
+            `http://wprd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=${
+              this.selectStyle || 7
+            }&x=${x}&y=${y}&z=${z}`,
+            (res) => {
               this.theZip.file(`tiles/${z}/${y}/${x}.png`, res);
-              setTimeout(() => {
-                resolve();
-              }, 10);
+              resolve();
             }
           );
         });
       },
 ```
 
-> 要先将一个 zip 包放在 public 文件夹下，获取到 zip 包再通过 JSZip 写入瓦片
+> 要先将一个 zip 包放在 public 文件夹下，获取到 zip 包再通过 JSZip 写入瓦片。下载完成后 README.md 会包含范围、中心点、最小/最大缩放级别信息。
 
 ```js
 
@@ -149,30 +148,48 @@ download() {
         let tiles = this.getTileLayer();
         this.$msgbox({
           title: '是否下载?',
-          message: `大概需要${(tiles.length * 0.1).toFixed(2)}秒`,
+          message: `大概需要${(tiles.length * 0.1 / 6).toFixed(2)}秒`,
           showConfirmButton: true,
           showCancelButton: true
         }).then(() => {
           this.isShow = false;
           this.isLoading = true;
           this.process = 0;
-          //写入事先准备好的瓦片地图zip包
-          getBlob('tiles.zip', res => {
-            JSZip.loadAsync(res).then(async zip => {
+          getBlob('tiles.zip', (res) => {
+            JSZip.loadAsync(res).then(async (zip) => {
               this.theZip = zip;
 
-              for (let i = 0; i < tiles.length; i++) {
-                let item = tiles[i];
-                await this.writeBlob(item.x, item.y, item.z);
-                this.process = ((i / tiles.length) * 100).toFixed(2);
+              // 同时下载6个，因为高德地图服务器http1.1的限制,并发数为通常为6
+              for (let i = 0; i < tiles.length; i += 6) {
+
+                if (i + 5 >= tiles.length) {
+                  for (let j = i; j < tiles.length; j++) {
+                    await this.writeBlob(tiles[j].x, tiles[j].y, tiles[j].z);
+                  }
+                  this.process = 100;
+                  break;
+                }
+
+                await Promise.all([
+                  this.writeBlob(tiles[i].x, tiles[i].y, tiles[i].z),
+                  this.writeBlob(tiles[i + 1].x, tiles[i + 1].y, tiles[i + 1].z),
+                  this.writeBlob(tiles[i + 2].x, tiles[i + 2].y, tiles[i + 2].z),
+                  this.writeBlob(tiles[i + 3].x, tiles[i + 3].y, tiles[i + 3].z),
+                  this.writeBlob(tiles[i + 4].x, tiles[i + 4].y, tiles[i + 4].z),
+                  this.writeBlob(tiles[i + 5].x, tiles[i + 5].y, tiles[i + 5].z)
+                ]);
+                this.process = (((i + 5) / tiles.length) * 100).toFixed(2);
               }
-              //写入相关信息
+
+              let selectedZooms = Object.keys(this.zoomMap).filter(k => this.zoomMap[k]).map(Number);
+              let minZ = Math.min(...selectedZooms);
+              let maxZ = Math.max(...selectedZooms);
               this.theZip.file(
                 `README.md`,
-                `# 文件夹目录\n${this.rule}\n\n# 当前地图瓦片 \n 范围：${this.rectLngLat}\n中心点:${this.centerLnglat}`
+                `# 文件夹目录\n${this.rule}\n\n# 当前地图瓦片\n范围:${this.rectLngLat}\n中心点:${this.centerLnglat}\n最小缩放:${minZ}\n最大缩放:${maxZ}`
               );
-              this.theZip.generateAsync({ type: 'blob' }).then(blob => {
-                saveAs(blob, '离线高德地图瓦片' + new Date().format('yyyyMMddhhmmss') + '.zip');
+              this.theZip.generateAsync({ type: 'blob' }).then((blob) => {
+                saveAs(blob, '离线高德地图瓦片' + new Date().getTime() + '.zip');
               });
               this.isLoading = false;
             });
@@ -203,8 +220,10 @@ README.md
 tiles/[z]/[y]/[x].png
 
 # 当前地图瓦片
- 范围：113.353114,23.02803;113.43286,23.074142
+范围:113.353114,23.02803;113.43286,23.074142
 中心点:113.392987,23.051086
+最小缩放:14
+最大缩放:15
 
 ```
 
@@ -214,7 +233,19 @@ tiles/z/y/x/1234.png
 
 ## 使用离线高德地图 maps.js 验证下载的瓦片地图
 
-> mapBox，mapTalks,Leafle 等常用离线地图验证都行，但是他们都一个通病，就是加载瓦片地图的时候巨卡，而且会出现莫名其妙缺一块的情况（就是你打开文件夹有图片，它就是叛逆不加载的情况）。然后我选择了直接利用离线的高德地图 maps.js，流畅度甩别人一条街！而且那些高德地图的 API 你也可以用了！这简直太优秀了！
+> mapBox，mapTalks,Leaflet 等常用离线地图验证都行，但是他们都一个通病，就是加载瓦片地图的时候巨卡，而且会出现莫名其妙缺一块的情况（就是你打开文件夹有图片，它就是叛逆不加载的情况）。然后我选择了直接利用离线的高德地图 maps.js，流畅度甩别人一条街！而且那些高德地图的 API 你也可以用了！这简直太优秀了！
+
+### 方式一：使用 tileMapViewer.html（基于 Leaflet）
+
+文件地址：`public/tileMapViewer.html`
+
+- 支持配置瓦片地址、中心经纬度、缩放级别
+- 支持从下载的 zip 包中的 README.md 文件加载配置（自动填入中心点、最小/最大缩放级别）
+- 可收起配置面板，底部显示当前经纬度和缩放级别
+
+### 方式二：使用 offlineMap.html（基于高德地图 JS API）
+
+文件地址：`public/offlineMap.html`
 
 **注意：**
 
@@ -223,6 +254,14 @@ tiles/z/y/x/1234.png
 3. 避免加载空白一定要限定缩放范围 zooms 和边界方位 bounds
 
 文件地址：public/offlineMap.html 可测试验证离线地图
+
+# 6.地点搜索
+
+使用 Nominatim（OpenStreetMap）免费地理编码接口进行地点搜索，无需额外 API key。搜索结果会自动进行 WGS-84 到 GCJ-02 的坐标转换，确保在高德地图上定位准确。
+
+# 7.地图样式切换
+
+左下角支持切换三种地图样式：普通地图、卫星地图、路况地图。
 
 ```html
 <div id="container"></div>
