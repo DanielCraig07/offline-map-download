@@ -172,6 +172,12 @@
     </div>
 
     <div class="control-group">
+      <label>路网注记图层（可选）</label>
+      <button class="btn btn-toggle" onclick="selectRoadFolder()" style="margin-top:0">选择 tiles-road 文件夹</button>
+      <div id="roadFolderInfo" style="font-size:11px;color:#999;margin-top:4px">叠加路网标注，让卫星图显示道路与地名</div>
+    </div>
+
+    <div class="control-group">
       <label>中心经度</label>
       <input type="number" id="lng" value="82.343824" step="0.001" />
     </div>
@@ -209,7 +215,7 @@
   </div>
 
   <script>
-    var map, tileLayer, tileDirHandle = null;
+    var map, tileLayer, roadLayer, tileDirHandle = null, roadDirHandle = null;
 
     function initMap() {
       var lng = parseFloat(document.getElementById('lng').value);
@@ -277,6 +283,45 @@
         maxZoom: maxZoom,
         tileSize: 256
       }).addTo(map);
+
+      // 加载路网注记图层
+      if (roadDirHandle) {
+        addRoadLayer(minZoom, maxZoom);
+      }
+    }
+
+    function addRoadLayer(minZoom, maxZoom) {
+      if (roadLayer) { map.removeLayer(roadLayer); roadLayer = null; }
+      var RoadTileLayer = L.GridLayer.extend({
+        createTile: function (coords, done) {
+          var tile = document.createElement('img');
+          tile.setAttribute('role', 'presentation');
+          tile.style.width = '256px';
+          tile.style.height = '256px';
+          tile.onerror = function () { tile.style.display = 'none'; };
+
+          var z = coords.z, y = coords.y, x = coords.x;
+          roadDirHandle.getDirectoryHandle(String(z))
+            .then(function (zDir) { return zDir.getDirectoryHandle(String(y)); })
+            .then(function (yDir) { return yDir.getFileHandle(x + '.png'); })
+            .then(function (fh) { return fh.getFile(); })
+            .then(function (file) {
+              tile.src = URL.createObjectURL(file);
+              done(null, tile);
+            })
+            .catch(function () {
+              done(null, tile);
+            });
+
+          return tile;
+        }
+      });
+      roadLayer = new RoadTileLayer({
+        minZoom: minZoom,
+        maxZoom: maxZoom,
+        tileSize: 256,
+        opacity: 1
+      }).addTo(map);
     }
 
     async function selectTileFolder() {
@@ -286,15 +331,37 @@
       }
       try {
         tileDirHandle = await window.showDirectoryPicker({ mode: 'read' });
+        roadDirHandle = null;
         document.getElementById('folderInfo').textContent = '已选择: ' + tileDirHandle.name;
+        document.getElementById('roadFolderInfo').textContent = '叠加路网标注，让卫星图显示道路与地名';
         showToast('瓦片文件夹已加载');
         var minZoom = parseInt(document.getElementById('minZoom').value);
         var maxZoom = parseInt(document.getElementById('maxZoom').value);
         if (map) {
           if (tileLayer) map.removeLayer(tileLayer);
+          if (roadLayer) { map.removeLayer(roadLayer); roadLayer = null; }
           addLocalTileLayer(minZoom, maxZoom);
         } else {
           initMap();
+        }
+      } catch (e) {
+        // user cancelled
+      }
+    }
+
+    async function selectRoadFolder() {
+      if (!window.showDirectoryPicker) {
+        alert('当前浏览器不支持选择文件夹，请使用 Chrome 或 Edge');
+        return;
+      }
+      try {
+        roadDirHandle = await window.showDirectoryPicker({ mode: 'read' });
+        document.getElementById('roadFolderInfo').textContent = '已选择: ' + roadDirHandle.name;
+        showToast('路网注记图层已加载');
+        var minZoom = parseInt(document.getElementById('minZoom').value);
+        var maxZoom = parseInt(document.getElementById('maxZoom').value);
+        if (map) {
+          addRoadLayer(minZoom, maxZoom);
         }
       } catch (e) {
         // user cancelled
@@ -335,6 +402,8 @@
       var centerMatch = text.match(/中心点[:：]\s*([\d.]+),\s*([\d.]+)/);
       var minZoomMatch = text.match(/最小缩放[:：]\s*(\d+)/);
       var maxZoomMatch = text.match(/最大缩放[:：]\s*(\d+)/);
+      var hasRoad = /路网注记[:：]\s*true/i.test(text);
+      var roadDirMatch = text.match(/路网文件目录[:：]\s*(.+)/);
       if (centerMatch) {
         document.getElementById('lng').value = centerMatch[1];
         document.getElementById('lat').value = centerMatch[2];
@@ -349,6 +418,14 @@
       }
       initMap();
       showToast('配置已从README.md加载');
+      if (hasRoad) {
+        // 在面板中显示路网文件目录路径
+        var roadPath = roadDirMatch ? roadDirMatch[1].trim() : 'tiles-road/[z]/[y]/[x].png';
+        document.getElementById('roadFolderInfo').textContent = '路网文件目录：' + roadPath + '（请点击上方按钮选择 tiles-road 文件夹）';
+        setTimeout(function () {
+          showToast('检测到路网注记层（' + roadPath + '），请选择 tiles-road 文件夹叠加显示');
+        }, 1800);
+      }
     }
 
     function showToast(msg) {

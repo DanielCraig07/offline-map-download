@@ -45,7 +45,7 @@
     <div class="canvas" ref="canvas"></div>
 
     <el-dialog v-model="isShow" title="下载地图瓦片" width="60%" append-to-body>
-      <el-form label-width="100px">
+      <el-form label-width="120px">
         <el-form-item label="选中范围">
           <el-input :value="rectLngLat" readonly> </el-input>
         </el-form-item>
@@ -56,6 +56,10 @@
           <el-select v-model="selectStyle">
             <el-option v-for="item in styleOps" v-bind="item" :key="item.value"></el-option>
           </el-select>
+        </el-form-item>
+        <el-form-item label="路网注记叠加" v-if="selectStyle === '6'">
+          <el-checkbox v-model="withRoadOverlay">同时下载路网标注图层（tiles-road/z/y/x.png）</el-checkbox>
+          <div style="font-size:12px;color:#999;margin-top:4px">卫星图无路网名称，勾选后可在查看器中叠加显示道路与地名</div>
         </el-form-item>
         <el-form-item label="路径规则">
           <el-input :value="rule" readonly> </el-input>
@@ -185,12 +189,12 @@
     data: () => ({
       process: 0,
       selectStyle: '7',
+      withRoadOverlay: true,
       styleOps: [
         { label: '普通地图', value: '7' },
         { label: '卫星地图', value: '6' },
         { label: '路况地图', value: '8' }
       ],
-      rule: `tiles/[z]/[y]/[x].png`,
       zoomMap: {},
       isShow: false,
       zooms,
@@ -211,6 +215,12 @@
       mapLoaded: false,
     }),
     computed: {
+      rule() {
+        if (this.selectStyle === '6' && this.withRoadOverlay) {
+          return 'tiles/[z]/[y]/[x].png（卫星） + tiles-road/[z]/[y]/[x].png（路网）';
+        }
+        return 'tiles/[z]/[y]/[x].png';
+      },
       tableData() {
         if (this.rect) {
           let list = [];
@@ -294,7 +304,7 @@
 
         return (endx - startx + 1) * (endy - starty + 1);
       },
-      async writeBlobToFolder(x, y, z, tilesDir) {
+      async writeBlobToFolder(x, y, z, tilesDir, roadDir) {
         let url = `http://wprd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=${
           this.selectStyle || 7
         }&x=${x}&y=${y}&z=${z}`;
@@ -306,15 +316,37 @@
         let writable = await fileHandle.createWritable();
         await writable.write(res);
         await writable.close();
+        // 同时下载路网注记图层
+        if (roadDir) {
+          let roadUrl = `http://wprd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=8&x=${x}&y=${y}&z=${z}`;
+          let roadRes = await fetchTileWithRetry(roadUrl, 3);
+          if (roadRes) {
+            let rzDir = await roadDir.getDirectoryHandle(String(z), { create: true });
+            let ryDir = await rzDir.getDirectoryHandle(String(y), { create: true });
+            let rfh = await ryDir.getFileHandle(`${x}.png`, { create: true });
+            let rw = await rfh.createWritable();
+            await rw.write(roadRes);
+            await rw.close();
+          }
+        }
         return true;
       },
       writeBlob(x, y, z) {
         let url = `http://wprd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=${
           this.selectStyle || 7
         }&x=${x}&y=${y}&z=${z}`;
-        return fetchTileWithRetry(url, 3).then((res) => {
+        const needRoad = this.selectStyle === '6' && this.withRoadOverlay;
+        return fetchTileWithRetry(url, 3).then(async (res) => {
           if (res) {
             this.theZip.file(`tiles/${z}/${y}/${x}.png`, res);
+            // 同时下载路网注记图层
+            if (needRoad) {
+              let roadUrl = `http://wprd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=8&x=${x}&y=${y}&z=${z}`;
+              let roadRes = await fetchTileWithRetry(roadUrl, 3);
+              if (roadRes) {
+                this.theZip.file(`tiles-road/${z}/${y}/${x}.png`, roadRes);
+              }
+            }
             return true;
           }
           return false;
@@ -352,9 +384,11 @@
           return;
         }
         let tiles = this.getTileLayer();
+        const needRoad = this.selectStyle === '6' && this.withRoadOverlay;
+        const totalTiles = needRoad ? tiles.length * 2 : tiles.length;
         this.$msgbox({
           title: '是否下载?',
-          message: `共 ${tiles.length} 个瓦片，大概需要${(tiles.length * 0.1 / 6).toFixed(2)}秒`,
+          message: `共 ${tiles.length} 个瓦片${needRoad ? '（+路网注记层）' : ''}，大概需要${(totalTiles * 0.1 / 6).toFixed(2)}秒`,
           showConfirmButton: true,
           showCancelButton: true
         }).then(async () => {
@@ -371,12 +405,29 @@
               this.isLoading = false;
               return;
             }
+
+            // 先写 README.md（与 tiles/ 同级），确保中途中断也能找到中心点信息
+            let selectedZooms = Object.keys(this.zoomMap).filter(k => this.zoomMap[k]).map(Number);
+            let minZ = Math.min(...selectedZooms);
+            let maxZ = Math.max(...selectedZooms);
+            let ruleText = needRoad
+              ? 'tiles/[z]/[y]/[x].png（卫星底图）\ntiles-road/[z]/[y]/[x].png（路网注记）'
+              : 'tiles/[z]/[y]/[x].png';
+            let readmeHandle = await rootDir.getFileHandle('README.md', { create: true });
+            let readmeWritable = await readmeHandle.createWritable();
+            await readmeWritable.write(
+              `# 文件夹目录\n${ruleText}\n\n# 当前地图瓦片\n范围:${this.rectLngLat}\n中心点:${this.centerLnglat}\n最小缩放:${minZ}\n最大缩放:${maxZ}${needRoad ? '\n路网注记:true\n路网文件目录:tiles-road/[z]/[y]/[x].png' : ''}`
+            );
+            await readmeWritable.close();
+
+            // 创建瓦片目录并开始下载
             let tilesDir = await rootDir.getDirectoryHandle('tiles', { create: true });
+            let roadDir = needRoad ? await rootDir.getDirectoryHandle('tiles-road', { create: true }) : null;
 
             for (let i = 0; i < tiles.length; i += 6) {
               let batch = tiles.slice(i, i + 6);
               let results = await Promise.all(
-                batch.map((t) => this.writeBlobToFolder(t.x, t.y, t.z, tilesDir))
+                batch.map((t) => this.writeBlobToFolder(t.x, t.y, t.z, tilesDir, roadDir))
               );
               failCount += results.filter((r) => !r).length;
               this.process = (((i + batch.length) / tiles.length) * 100).toFixed(2);
@@ -384,19 +435,11 @@
             }
             this.process = 100;
 
-            let selectedZooms = Object.keys(this.zoomMap).filter(k => this.zoomMap[k]).map(Number);
-            let minZ = Math.min(...selectedZooms);
-            let maxZ = Math.max(...selectedZooms);
-            let readmeHandle = await rootDir.getFileHandle('README.md', { create: true });
-            let writable = await readmeHandle.createWritable();
-            await writable.write(`# 文件夹目录\n${this.rule}\n\n# 当前地图瓦片\n范围:${this.rectLngLat}\n中心点:${this.centerLnglat}\n最小缩放:${minZ}\n最大缩放:${maxZ}`);
-            await writable.close();
-
             this.isLoading = false;
             if (failCount > 0) {
               this.$message.warning(`下载完成，但有 ${failCount} 个瓦片下载失败`);
             } else {
-              this.$message.success('全部瓦片已写入文件夹');
+              this.$message.success('全部瓦片已写入文件夹' + (needRoad ? '（含路网注记层）' : ''));
             }
           } else {
             getBlob('tiles.zip', (res) => {
@@ -417,16 +460,19 @@
                 let selectedZooms = Object.keys(this.zoomMap).filter(k => this.zoomMap[k]).map(Number);
                 let minZ = Math.min(...selectedZooms);
                 let maxZ = Math.max(...selectedZooms);
+                let ruleText = needRoad
+                  ? 'tiles/[z]/[y]/[x].png（卫星底图）\ntiles-road/[z]/[y]/[x].png（路网注记）'
+                  : 'tiles/[z]/[y]/[x].png';
                 this.theZip.file(
                   `README.md`,
-                  `# 文件夹目录\n${this.rule}\n\n# 当前地图瓦片\n范围:${this.rectLngLat}\n中心点:${this.centerLnglat}\n最小缩放:${minZ}\n最大缩放:${maxZ}`
+                  `# 文件夹目录\n${ruleText}\n\n# 当前地图瓦片\n范围:${this.rectLngLat}\n中心点:${this.centerLnglat}\n最小缩放:${minZ}\n最大缩放:${maxZ}${needRoad ? '\n路网注记:true\n路网文件目录:tiles-road/[z]/[y]/[x].png' : ''}`
                 );
                 this.theZip.generateAsync({ type: 'blob' }).then((blob) => {
                   saveAs(blob, '离线高德地图瓦片' + new Date().getTime() + '.zip');
                   if (failCount > 0) {
                     this.$message.warning(`下载完成，但有 ${failCount} 个瓦片下载失败`);
                   } else {
-                    this.$message.success('全部瓦片下载成功');
+                    this.$message.success('全部瓦片下载成功' + (needRoad ? '（含路网注记层）' : ''));
                   }
                 });
                 this.isLoading = false;

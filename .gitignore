@@ -25,3 +25,5 @@ dist-ssr
 
 # 地图瓦片
 public/tiles/
+public/tiles-road/
+public/wapian_file/
